@@ -145,7 +145,7 @@ export async function saveDevice(mac, batch, testerEmail) {
   const snap = await getDoc(ref);
 
   const data = {
-    mac,
+    macAddress: mac,
     batch,
     tester_email: testerEmail,
     last_tested: serverTimestamp(),
@@ -172,7 +172,7 @@ export async function saveDongleDevice(mac, port, testerEmail) {
   const snap = await getDoc(ref);
 
   const data = {
-    mac,
+    macAddress: mac,
     port: port ?? null,
     tester_email: testerEmail,
     last_tested: serverTimestamp(),
