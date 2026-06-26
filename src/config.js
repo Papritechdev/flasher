@@ -14,8 +14,9 @@ export const CHAR_UUID = {
 // ============================================================
 //  BLE
 // ============================================================
-export const BLE_DEVICE_NAME_PREFIX = 'PCB_TEST_';
-export const DONGLE_BLE_NAME_PREFIX = 'Dongle ';
+export const BLE_DEVICE_NAME_PREFIX        = 'PCB_TEST_';
+export const DONGLE_BLE_NAME_PREFIX        = 'Dongle ';
+export const FLASH_DEVICE_BLE_NAME_PREFIX  = 'AirMotion';
 
 // ============================================================
 //  Pass/Fail byte values (firmware-defined)

@@ -225,6 +225,24 @@ export async function saveReport(session, testerEmail) {
 // ============================================================
 
 /**
+ * Fetch just batch names sorted by latest_test_date descending.
+ * Lightweight — does not hydrate device arrays.
+ * @returns {Promise<string[]>}
+ */
+export async function fetchBatchList() {
+  const snap = await getDocs(collection(db, 'test_reports'));
+  const entries = snap.docs.map((docSnap) => {
+    const data = docSnap.data();
+    const batchId = String(data.batch ?? docSnap.id ?? '').trim();
+    const latestTime = toDate(data.latest_test_date ?? data.updated_at ?? data.test_date)?.getTime?.() ?? 0;
+    return { batch: batchId, latestTime };
+  }).filter((e) => e.batch);
+
+  entries.sort((a, b) => b.latestTime - a.latestTime);
+  return entries.map((e) => e.batch);
+}
+
+/**
  * Fetch test_reports with optional filters.
  * @param {{ batch?: string, result?: 'PASS'|'FAIL', dateFrom?: Date, dateTo?: Date }} filters
  * @returns {Promise<Array>}

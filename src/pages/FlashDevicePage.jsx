@@ -1,5 +1,25 @@
 import { useState, useEffect, useRef } from 'react';
 import DongleFlashModal from '../components/DongleFlashModal';
+import { FLASH_DEVICE_BLE_NAME_PREFIX } from '../config';
+import { saveDevice } from '../utils/firestore';
+import { useAuth } from '../hooks/useAuth';
+
+function parseMacFromName(name) {
+  if (!name) return null;
+  // Full 6-octet MAC: AA:BB:CC:DD:EE:FF
+  const full = name.match(/([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})/);
+  if (full) return full[1].toUpperCase();
+  // Partial 4-octet (last 4 bytes): pad with 00:00 prefix → 00:00:AA:BB:CC:DD
+  const partial4 = name.match(/([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){3})(?!:[0-9A-Fa-f])/);
+  if (partial4) return `00:00:${partial4[1].toUpperCase()}`;
+  // Partial 3-byte hex suffix (no colons): pad with 00:00:00 prefix
+  const partial3 = name.match(/([0-9A-Fa-f]{6})$/);
+  if (partial3) {
+    const h = partial3[1].toUpperCase();
+    return `00:00:00:${h.slice(0,2)}:${h.slice(2,4)}:${h.slice(4,6)}`;
+  }
+  return null;
+}
 
 const MODELS = [
   { id: 'plus',   label: 'Plus / Pro',  desc: 'Standard Plus and Pro variants' },
@@ -8,6 +28,7 @@ const MODELS = [
 ];
 
 export default function FlashDevicePage() {
+  const { user } = useAuth();
   const [selectedModel, setSelectedModel] = useState('plus');
   const [versions, setVersions]           = useState(null);
   const [versionsError, setVersionsError] = useState(null);
@@ -15,6 +36,12 @@ export default function FlashDevicePage() {
   const [progress, setProgress]           = useState(0);
   const [log, setLog]                     = useState([]);
   const [showDongle, setShowDongle]       = useState(false);
+
+  // BLE + save state (shown after successful PCB flash)
+  const [blePhase,  setBlePhase]  = useState(null); // null | scanning | found | saving | saved | error
+  const [bleDevice, setBleDevice] = useState(null); // { name, mac }
+  const [bleError,  setBleError]  = useState(null);
+  const [saveError, setSaveError] = useState(null);
 
   const logRef = useRef(null);
   const esRef  = useRef(null);
@@ -57,6 +84,10 @@ export default function FlashDevicePage() {
     setStatus('flashing');
     setProgress(0);
     setLog([]);
+    setBlePhase(null);
+    setBleDevice(null);
+    setBleError(null);
+    setSaveError(null);
 
     const es = new EventSource(`/api/flash-device?model=${selectedModel}`);
     esRef.current = es;
@@ -69,7 +100,10 @@ export default function FlashDevicePage() {
         es.close();
         const code = parseInt(line.split(':')[1], 10);
         setStatus(code === 0 ? 'done' : 'error');
-        if (code === 0) setProgress(100);
+        if (code === 0) {
+          setProgress(100);
+          handleBleScan();
+        }
         return;
       }
 
@@ -85,11 +119,53 @@ export default function FlashDevicePage() {
     };
   }
 
+  async function handleBleScan() {
+    setBlePhase('scanning');
+    setBleError(null);
+    setBleDevice(null);
+    try {
+      if (!navigator.bluetooth) {
+        throw new Error('Web Bluetooth is not available. Use Chrome or Edge.');
+      }
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: FLASH_DEVICE_BLE_NAME_PREFIX }],
+      });
+      const mac = parseMacFromName(device.name);
+      const found = { name: device.name, mac: mac ?? device.name };
+      setBleDevice(found);
+      setBlePhase('found');
+      await handleSave(found);
+    } catch (err) {
+      if (err.name === 'NotFoundError') {
+        setBleError('No device selected. Press Scan Again and pick the device from the list.');
+      } else {
+        setBleError(err.message);
+      }
+      setBlePhase('error');
+    }
+  }
+
+  async function handleSave(device) {
+    setSaveError(null);
+    setBlePhase('saving');
+    try {
+      await saveDevice(device.mac, '', user?.email ?? '');
+      setBlePhase('saved');
+    } catch (err) {
+      setSaveError(err.message);
+      setBlePhase('error');
+    }
+  }
+
   function handleReset() {
     esRef.current?.close?.();
     setStatus('idle');
     setProgress(0);
     setLog([]);
+    setBlePhase(null);
+    setBleDevice(null);
+    setBleError(null);
+    setSaveError(null);
   }
 
   const isFlashing = status === 'flashing';
@@ -267,10 +343,65 @@ export default function FlashDevicePage() {
           {isError && (
             <button className="btn-danger" onClick={handleReset}>↺ Retry</button>
           )}
-          {isDone && (
+          {isDone && blePhase === 'saved' && (
             <button className="btn-success" onClick={handleReset}>Flash Another</button>
           )}
         </div>
+
+        {/* BLE scan + Firebase registration (shown after successful flash) */}
+        {isDone && blePhase && (
+          <div className="bg-slate-800 border border-slate-700 rounded-lg p-4 space-y-3">
+            <p className="text-xs text-slate-400 uppercase tracking-wider font-medium">
+              Register Device MAC
+            </p>
+
+            {(bleError || saveError) && (
+              <div className="bg-red-950 border border-red-700 rounded p-3 text-red-300 text-xs">
+                {saveError ? `Save failed: ${saveError}` : bleError}
+              </div>
+            )}
+
+            {blePhase === 'scanning' && (
+              <div className="flex items-center gap-3 text-sm text-slate-400">
+                <svg className="animate-spin w-4 h-4 text-blue-400 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
+                </svg>
+                <span>Scanning for <span className="text-blue-400">{FLASH_DEVICE_BLE_NAME_PREFIX}…</span></span>
+              </div>
+            )}
+
+            {(blePhase === 'found' || blePhase === 'saving') && bleDevice && (
+              <div className="flex items-center gap-3">
+                <div className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse flex-shrink-0" />
+                <div>
+                  <p className="font-semibold text-blue-300 text-sm">{bleDevice.name}</p>
+                  <p className="text-xs text-slate-400 font-mono">MAC: {bleDevice.mac}</p>
+                </div>
+                {blePhase === 'saving' && (
+                  <span className="text-xs text-slate-500 ml-auto">Saving…</span>
+                )}
+              </div>
+            )}
+
+            {blePhase === 'saved' && bleDevice && (
+              <div className="flex items-center gap-3">
+                <span className="text-green-400 text-lg">✅</span>
+                <div>
+                  <p className="font-semibold text-green-300 text-sm">Registered in Firebase</p>
+                  <p className="text-xs text-slate-400 font-mono">MAC: {bleDevice.mac}</p>
+                </div>
+              </div>
+            )}
+
+            {blePhase === 'error' && (
+              <div className="flex justify-end">
+                <button className="btn-ghost text-xs" onClick={handleBleScan}>
+                  🔍 Scan Again
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* USB Dongle flash modal */}
